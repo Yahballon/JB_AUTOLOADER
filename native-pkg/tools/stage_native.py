@@ -20,7 +20,7 @@ assert len(CONTENT_ID) == 36
 
 def install_stage(bridge: Path, this_repo: Path, bundle: Path):
     app = bridge / "app"
-    target_main = app / "src/main.cpp"
+    target_main = app / "jbm-src/main.cpp"
     source_main = this_repo / "native-pkg/src/main.cpp"
     if not target_main.is_file() or not source_main.is_file():
         raise FileNotFoundError("Pinned DevBridge app source or new launcher source missing")
@@ -28,6 +28,7 @@ def install_stage(bridge: Path, this_repo: Path, bundle: Path):
     for check in ("sceSystemServiceLaunchWebBrowser", "sceNetAccept", "/app0/assets/web", "BROWSER_LAUNCH"):
         if check not in source:
             raise ValueError("Missing launcher safety/feature check: " + check)
+    target_main.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source_main, target_main)
 
     metadata_path = app / "sce_sys/param.json"
