@@ -1,0 +1,100 @@
+name: Experimental native JAILBREAK ME PKG - DevBridge browser method
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/native-pkg-autoboot-prototype
+    paths:
+      - 'native-pkg/**'
+      - '.github/workflows/experimental-native-pkg.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  native-pkg:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host toolchain and .NET 10
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang-18 ninja-build cmake python3-venv libz-dev libssl-dev
+          python3 -m py_compile native-pkg/tools/stage_native.py
+          clang++-18 -std=c++20 -Wall -Wextra -pedantic -fsyntax-only native-pkg/src/main.cpp
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Clone PINNED native app SDK scaffold and PKG builder
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Yahballon/PS5-DevBridge.git /tmp/jbm-devbridge
+          git -C /tmp/jbm-devbridge checkout --detach 822936845afdf3b22c00ef52fedf0b13d30eedf8
+          mkdir -p third_party
+          git clone https://github.com/SvenGDK/LibProsperoPKG.git third_party/LibProsperoPKG
+          git -C third_party/LibProsperoPKG checkout --detach 748eabf1b7d17819528cabf367d8e27109d8fce3
+          git -C third_party/LibProsperoPKG submodule update --init --recursive
+      - name: Download working JAILBREAK ME v0.4.0 offline distribution
+        run: |
+          set -euo pipefail
+          base="https://github.com/Yahballon/JB_AUTOLOADER/releases/download/v0.4.0-cyber-fastboot"
+          curl --fail --location --retry 3 --max-time 300 "$base/WKAG00001-JB-STORE-EXPERIMENTAL.zip" -o /tmp/jbm-offline.zip
+          curl --fail --location --retry 3 --max-time 90 "$base/SHA256SUMS.txt" -o /tmp/JBM-SHA256SUMS.txt
+          expected="$(awk '$2=="WKAG00001-JB-STORE-EXPERIMENTAL.zip" {print $1}' /tmp/JBM-SHA256SUMS.txt)"
+          test -n "$expected"
+          echo "$expected  /tmp/jbm-offline.zip" | sha256sum -c -
+      - name: Stage native launcher, exact artwork and offline exploit
+        run: |
+          set -euo pipefail
+          python3 native-pkg/tools/stage_native.py --repo . \
+            --bridge /tmp/jbm-devbridge --bundle /tmp/jbm-offline.zip
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          app=Path('/tmp/jbm-devbridge/app')
+          p=json.loads((app/'sce_sys/param.json').read_text())
+          assert p['titleId']=='PPSA99767'
+          assert p['localizedParameters']['en-US']['titleName']=='JAILBREAK ME'
+          assert (app/'assets/web/app/index.html').is_file()
+          assert len(list((app/'assets/web/app').glob('*/app.js'))) == 1
+          print('Native package stage contains custom icon/music/background and actual cached WebKit resources')
+          PY
+      - name: Build genuine native PS5 eboot.bin using DevBridge toolchain
+        working-directory: /tmp/jbm-devbridge/app
+        run: |
+          set -euo pipefail
+          make USE_CCACHE=0 BUILD_JOBS=4 app
+          test -s dist/PPSA99767/eboot.bin
+          test -s dist/PPSA99767/sce_sys/param.json
+          test -s dist/PPSA99767/assets/web/app/index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          eboot=Path('dist/PPSA99767/eboot.bin').read_bytes()
+          assert len(eboot)>10000
+          assert eboot[:4] in (b'\x4f\x15\x3d\x1d',b'\x54\x14\xf5\xee')
+          print('Native PS5 fake-SELF built:',len(eboot))
+          PY
+      - name: Produce real debug PS5 package (not a folder ZIP)
+        run: |
+          set -euo pipefail
+          mkdir -p native-pkg-output
+          dotnet run --project native-pkg/packager/Packager.csproj --configuration Release \
+            -- /tmp/jbm-devbridge/app/dist/PPSA99767 native-pkg-output
+          pkg="$(find native-pkg-output -maxdepth 1 -type f -name '*.pkg' -print -quit)"
+          test -n "$pkg"
+          python3 - "$pkg" <<'PY'
+          import pathlib,sys
+          f=pathlib.Path(sys.argv[1]); head=f.read_bytes()[:4]
+          assert head==b'\x7fFIH', f'Not a real finalized PS5 debug pkg: {head!r}'
+          assert f.stat().st_size>1024*1024
+          print('Real PS5 debug PKG header checked:',f.name,f.stat().st_size)
+          PY
+          cp "$pkg" native-pkg-output/JAILBREAK-ME-PPSA99767-EXPERIMENTAL.pkg
+          (cd native-pkg-output && sha256sum JAILBREAK-ME-PPSA99767-EXPERIMENTAL.pkg > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EXPERIMENTAL-PS5-JAILBREAK-ME-NATIVE-PKG-UNTESTED
+          path: native-pkg-output/
+          retention-days: 14
+          if-no-files-found: error
