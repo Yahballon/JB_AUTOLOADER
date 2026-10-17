@@ -30,6 +30,7 @@ def install_stage(bridge: Path, this_repo: Path, bundle: Path):
             raise ValueError("Missing launcher safety/feature check: " + check)
     target_main.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source_main, target_main)
+    shutil.copyfile(app/"src/startup.cpp", app/"jbm-src/startup.cpp")
 
     metadata_path = app / "sce_sys/param.json"
     metadata = json.loads(metadata_path.read_text())
