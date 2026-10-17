@@ -11,6 +11,7 @@ import argparse
 import json
 import zipfile
 import shutil
+import struct
 
 TITLE_ID = "PPSA99767"
 CONTENT_ID = "UP9000-PPSA99767_00-JAILBREAKMEPKG01"
@@ -70,7 +71,22 @@ def install_stage(bridge: Path, this_repo: Path, bundle: Path):
         # Copy the artwork and audio from the EXACT tested store bundle.
         # This does not modify the original working WKAG00001 shortcut.
         for n in ("pic0.dds","pic1.dds","snd0.at9"):
-            (app/"sce_sys"/n).write_bytes(z.read("WKAG00001/sce_sys/"+n))
+            data = bytearray(z.read("WKAG00001/sce_sys/"+n))
+            if n.endswith(".dds"):
+                if data[:4] != b"DDS " or len(data) < 148:
+                    raise ValueError("Invalid source BC7 DDS: " + n)
+                width, height = struct.unpack_from("<II", data, 16)
+                expected = 148 + (width // 4) * (height // 4) * 16
+                if (width, height) != (3840,2160) or len(data) != expected or data[84:88] != b"DX10":
+                    raise ValueError("Unexpected source DDS dimensions/layout: " + n)
+                # The older BC7 encoder writes dwMipMapCount=0 to mean
+                # single level, but DevBridge's native toolchain requires 1.
+                # Normalize only this DDS header field; BC7 pixels stay identical.
+                mip = struct.unpack_from("<I", data, 28)[0]
+                if mip not in (0,1):
+                    raise ValueError("Unexpected multiple mips")
+                struct.pack_into("<I", data, 28, 1)
+            (app/"sce_sys"/n).write_bytes(data)
     if not (assets/"app/index.html").is_file() or not (assets/"cache.appcache").is_file():
         raise ValueError("Missing WebKit pointer/AppCache entrypoints")
     if not any((assets/"app").glob("*/app.js")):
