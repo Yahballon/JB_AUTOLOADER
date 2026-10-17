@@ -79,6 +79,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p native-pkg-output
+          # LibProsperoPKG converts source PNG artwork to canonical BC7 DDS.
+          # This avoids the older standalone DDS header rejected by DevBridge.
+          cp homebrew/ps5-webkit-autoloader-game/background.png \
+            /tmp/jbm-devbridge/app/dist/PPSA99767/sce_sys/pic0.png
+          cp homebrew/ps5-webkit-autoloader-game/background.png \
+            /tmp/jbm-devbridge/app/dist/PPSA99767/sce_sys/pic1.png
           dotnet run --project native-pkg/packager/Packager.csproj --configuration Release \
             -- /tmp/jbm-devbridge/app/dist/PPSA99767 native-pkg-output
           pkg="$(find native-pkg-output -maxdepth 1 -type f -name '*.pkg' -print -quit)"
