@@ -58,7 +58,7 @@ jobs:
           assert p['localizedParameters']['en-US']['titleName']=='JAILBREAK ME'
           assert (app/'assets/web.dat').is_file() and (app/'assets/web-index.tsv').is_file()
           assert '/app/index.html\t' in (app/'assets/web-index.tsv').read_text()
-          assert any(x.endswith('/app.js') for x in (app/'assets/web-index.tsv').read_text().splitlines())
+          assert any(x.split('\t',1)[0].endswith('/app.js') for x in (app/'assets/web-index.tsv').read_text().splitlines())
           print('Native package stage contains custom icon/music/background and actual cached WebKit resources')
           PY
       - name: Build genuine native PS5 eboot.bin using DevBridge toolchain
