@@ -1,0 +1,291 @@
+name: Build and Release JAILBREAK ME Cyber Fastboot
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'homebrew/ps5-webkit-autoloader-game/**'
+      - '.github/workflows/release.yml'
+      - 'tools/package_store_bundle.py'
+permissions:
+  contents: write
+jobs:
+  build-jailbreak-me-game:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync previously published JAILBREAK ME artwork and music
+        env:
+          PINNED_TEMP_COMMIT: 1d753629d517e926f9c24ecdb97abd824f66597d
+        run: |
+          set -euo pipefail
+          root=homebrew/ps5-webkit-autoloader-game
+          mkdir -p "$root"
+          for item in icon.png background.png soundtrack.mp3; do
+            if [ ! -s "$root/$item" ]; then
+              echo "Restoring pinned user-supplied $item"
+              curl -fsSL --retry 3 --max-time 120 \
+                "https://raw.githubusercontent.com/Yahballon/tmp_lap/$PINNED_TEMP_COMMIT/$root/$item" \
+                -o "$root/$item"
+            fi
+          done
+          test "$(git hash-object "$root/icon.png")" = "83c7e39ae5feabc77646a6050ad85b1300b41835"
+          test "$(git hash-object "$root/background.png")" = "8cccfff0045227d50d3c5fa93af2c30617bcaacf"
+          test "$(git hash-object "$root/soundtrack.mp3")" = "6de4edbcca38d0d5e8172007e6a3665ccf9a998d"
+          git add "$root/icon.png" "$root/background.png" "$root/soundtrack.mp3"
+          if ! git diff --cached --quiet; then
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "Add original JAILBREAK ME images and soundtrack [skip ci]"
+            git push origin HEAD:main
+          fi
+      - name: Get soundtrack
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/wkal-audio
+          if [ -f 'homebrew/ps5-webkit-autoloader-game/soundtrack.mp3' ]; then
+            cp 'homebrew/ps5-webkit-autoloader-game/soundtrack.mp3' /tmp/wkal-audio/song.mp3
+          else
+            echo 'Missing soundtrack.mp3. Upload it to homebrew/ps5-webkit-autoloader-game/ or provide an HTTPS URL when dispatching.'
+            exit 1
+          fi
+          test -s /tmp/wkal-audio/song.mp3
+      - name: Verify user-supplied 512x512 JAILBREAK ME icon
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('homebrew/ps5-webkit-autoloader-game/icon.png')
+          if not p.is_file():
+              raise SystemExit('ERROR: Upload your JAILBREAK ME icon.png to homebrew/ps5-webkit-autoloader-game/ before building. Refusing to release default icon.')
+          b=p.read_bytes()
+          if b[:8]!=b'\x89PNG\r\n\x1a\n' or len(b)<32:
+              raise SystemExit('icon.png must be a valid PNG')
+          dims=tuple(int.from_bytes(b[o:o+4],'big') for o in (16,20))
+          if dims!=(512,512):
+              raise SystemExit(f'icon.png must be 512x512, got {dims}')
+          print('Custom game tile icon verified:',len(b),'bytes')
+          PY
+      - name: Verify uploaded game selection background
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('homebrew/ps5-webkit-autoloader-game/background.png')
+          if not p.is_file():
+              raise SystemExit('Upload the provided background.png to homebrew/ps5-webkit-autoloader-game/ to include the 4K home-screen artwork.')
+          if p.stat().st_size > 15000000:
+              raise SystemExit('Background PNG exceeds 15MB limit')
+          if p.read_bytes()[:8]!=b'\x89PNG\r\n\x1a\n':
+              raise SystemExit('background.png is not a PNG')
+          print('User-provided background found:',p.stat().st_size,'bytes')
+          PY
+      - name: Fetch pinned WebKit v0.4.0 and PS5 AT9 encoder
+        run: |
+          set -euo pipefail
+          git clone https://github.com/itsPLK/ps5-webkit-autoloader.git upstream-wkal
+          git -C upstream-wkal checkout --detach 137f065d2ba8022ba8e796895e7cb05c204f2ce9
+          git -C upstream-wkal submodule update --init --recursive
+          git clone --depth 1 --branch v0.1.0 https://github.com/blackbearreloaded/ps5-at9-converter.git /tmp/ps5-at9-converter
+          cp homebrew/ps5-webkit-autoloader-game/icon.png upstream-wkal/assets/icon-custom.png
+          cp homebrew/ps5-webkit-autoloader-game/background.png upstream-wkal/frontend/installer-page/background.png
+          python3 homebrew/ps5-webkit-autoloader-game/patch_cyber_ui.py upstream-wkal
+          python3 homebrew/ps5-webkit-autoloader-game/patch_exploit_ui.py upstream-wkal
+      - name: Encode 60-second looping PS5 selection music
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/wkal-at9-venv
+          /tmp/wkal-at9-venv/bin/pip install 'numpy>=1.20,<3'
+          /tmp/wkal-at9-venv/bin/python /tmp/ps5-at9-converter/ps5_at9.py \
+            --input /tmp/wkal-audio/song.mp3 \
+            --output upstream-wkal/assets/snd0.at9 \
+            --start 0 --duration 60 --bitrate 192 --workers 4 \
+            --param-json upstream-wkal/assets/param.json.template
+      - name: Encode 4K BC7 DDS for PS5 Game selection and launch
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          /tmp/wkal-at9-venv/bin/pip install 'Pillow>=10,<13'
+          /tmp/wkal-at9-venv/bin/python homebrew/ps5-webkit-autoloader-game/prepare_background.py \
+            homebrew/ps5-webkit-autoloader-game/background.png upstream-wkal/assets --prepare
+          git clone https://github.com/richgel999/bc7enc_rdo.git /tmp/wkal-bc7enc
+          git -C /tmp/wkal-bc7enc checkout --detach b9438627eef73a1157e84201b6fa6eb2ffd6d9f0
+          cmake -S /tmp/wkal-bc7enc -B /tmp/wkal-bc7enc/build \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-include stdint.h' -DSUPPORT_BC7E=FALSE
+          cmake --build /tmp/wkal-bc7enc/build -j 4
+          /tmp/wkal-bc7enc/build/bc7enc -q -g -C -u3 \
+            upstream-wkal/assets/background-4k.png upstream-wkal/assets/pic0.dds
+          /tmp/wkal-at9-venv/bin/python \
+            homebrew/ps5-webkit-autoloader-game/prepare_background.py \
+            upstream-wkal/assets/pic0.dds --verify
+          cp upstream-wkal/assets/pic0.dds upstream-wkal/assets/pic1.dds
+      - name: Patch game identity, icon, home screen music and registration
+        run: |
+          set -euo pipefail
+          python3 homebrew/ps5-webkit-autoloader-game/patch_game.py upstream-wkal
+          python3 homebrew/ps5-webkit-autoloader-game/patch_music.py upstream-wkal
+          python3 homebrew/ps5-webkit-autoloader-game/stage_sqlite.py upstream-wkal
+          python3 homebrew/ps5-webkit-autoloader-game/patch_presentation.py upstream-wkal
+          python3 homebrew/ps5-webkit-autoloader-game/patch_background.py upstream-wkal
+          python3 homebrew/ps5-webkit-autoloader-game/patch_icon.py upstream-wkal
+          python3 homebrew/ps5-webkit-autoloader-game/patch_title.py upstream-wkal
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('upstream-wkal')
+          j=json.loads((root/'assets/param.json.template').read_text())
+          song=(root/'assets/snd0.at9').read_bytes()
+          assert j['titleId']=='WKAG00001' and j['applicationCategoryType']==0
+          assert j['localizedParameters']['en-US']['titleName']=='JAILBREAK ME'
+          assert j['contentVersion']=='01.000.003'
+          themed=(root/'frontend/installer-page/index.html').read_text()
+          assert 'JAILBREAK ME' in themed and 'AUTO-INSTALL SEQUENCE' in themed
+          assert 'wkalCyberStage' in themed
+          assert 'clear-webkit-data' in themed and '/install' in themed
+          assert (root/'frontend/installer-page/background.png').is_file()
+          assert 'ui=cyberpirate1' in (root/'src/main.c').read_text()
+          exploit=(root/'frontend/autoloader/index.html').read_text()
+          exploit_js=(root/'frontend/autoloader/app.js').read_text()
+          exploit_css=(root/'frontend/autoloader/style.css').read_text()
+          assert 'JAILBREAK ME' in exploit and 'jailbreakHeader' in exploit
+          assert 'jailbreakFirmware' in exploit and 'jailbreakChain' in exploit
+          assert 'MAX_LOG_LINES = 48' in exploit_js
+          assert "exploitEl.src = EXPLOIT_URL" in exploit_js
+          assert 'setTimeout(revealExploit, 1500)' not in exploit_js
+          assert "window.addEventListener('load', start)" not in exploit_js
+          assert "    revealExploit();\n    try {\n      exploitEl.src = EXPLOIT_URL;" in exploit_js
+          assert "  start();" in exploit_js
+          assert 'JAILBREAK ME Cyber Pirate' in exploit_css
+          assert 'background.png' not in exploit_css
+          assert j['deeplinkUri']=='http://127.0.0.1:18181/app/index.html'
+          assert j['pubtools']['loudnessSnd0']
+          assert song.startswith(b'RIFF') and song[8:12]==b'WAVE'
+          assert len(song)<=2097152
+          installer=(root/'src/app_installer.c').read_text()
+          assert '/user/appmeta/%s/icon0.png' in installer
+          assert '/user/appmeta/%s/snd0.at9' in installer
+          assert 'MUSIC_DB_REGISTER' in installer
+          assert 'BACKGROUND_DB_REGISTER' in installer
+          assert 'TITLE_DB_REGISTER' in installer
+          assert 'pic0_dds' in installer
+          assert 'vendor/sqlite/sqlite3.c' in (root/'Makefile').read_text()
+          print(f'PS5 Game selection music ready ({len(song)} bytes)')
+          PY
+      - name: Build PS5 SDK image
+        working-directory: upstream-wkal
+        run: docker build --pull -t ps5-webkit-autoloader-sdk -f Dockerfile.sdk .
+      - name: Compile WebKit installer and PC host
+        working-directory: upstream-wkal
+        env:
+          BUILD_TYPE: stable
+        run: |
+          set -euo pipefail
+          ./build_release.sh
+          test -s webkit-autoloader-installer_v0.4.0.elf
+          test -s webkit-autoloader-host_v0.4.0.py
+      - name: Verify music embedded in native ELF and stage test files
+        working-directory: upstream-wkal
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('assets/param.json').read_text())
+          assert p['titleId']=='WKAG00001'
+          assert p['localizedParameters']['en-US']['titleName']=='JAILBREAK ME'
+          assert p['contentVersion']=='01.000.003'
+          assert p['applicationCategoryType']==0 and p['pubtools']['loudnessSnd0']
+          elf=Path('webkit-autoloader-installer_v0.4.0.elf').read_bytes()
+          icon=Path('assets/icon0.png').read_bytes()
+          custom=Path('assets/icon-custom.png').read_bytes()
+          assert icon==custom, 'ERROR: original icon overwrote JAILBREAK ME icon'
+          assert icon in elf, 'ERROR: user-supplied PS5 game icon not embedded in installer'
+          sound=Path('assets/snd0.at9').read_bytes()
+          assert b'WKAG00001' in elf
+          assert b'JAILBREAK ME' in elf
+          assert b'TITLE_DB_REGISTER' in elf
+          registry=Path('include/file_registry.c').read_text()
+          page=Path('frontend/dist/index.html').read_text()
+          assert 'AUTO-INSTALL SEQUENCE' in page
+          assert '/index.html' in registry and '/background.png' in registry
+          staged_app=list(Path('frontend/dist/app').glob('*/index.html'))
+          assert len(staged_app)==1 and 'JAILBREAK ME' in staged_app[0].read_text()
+          staged_js=list(Path('frontend/dist/app').glob('*/app.js'))
+          assert len(staged_js)==1 and 'MAX_LOG_LINES = 48' in staged_js[0].read_text()
+          version_dir=app_index[0].parent.name if 'app_index' in locals() else staged_app[0].parent.name
+          assert ('/app/'+version_dir+'/index.html').encode() in elf
+          assert ('/app/'+version_dir+'/app.js').encode() in elf
+          assert b'/index.html' in elf and b'/background.png' in elf
+          assert Path('frontend/dist/background.png').read_bytes()==Path('frontend/installer-page/background.png').read_bytes()
+          assert sound in elf, 'ERROR: soundtrack not embedded in installer'
+          background=Path('assets/pic0.dds').read_bytes()
+          assert background==Path('assets/pic1.dds').read_bytes()
+          assert background in elf, 'ERROR: user-provided 4K Game background not embedded in installer'
+          assert b'BACKGROUND_DB_REGISTER' in elf
+          assert b'http://127.0.0.1:18181/app/index.html' in elf
+          print('ELF contains themed INSTALLER and offline EXPLOIT UI + icon + music + BC7 Game Hub background')
+          PY
+          mkdir -p ../game-build-with-music
+          cp webkit-autoloader-installer_v0.4.0.elf ../game-build-with-music/JAILBREAK-ME-CYBER-FASTBOOT_v0.4.0.elf
+          cp webkit-autoloader-host_v0.4.0.py ../game-build-with-music/JAILBREAK-ME-host_v0.4.0.py
+          cp assets/snd0.at9 ../game-build-with-music/snd0.at9
+          cp assets/icon0.png ../game-build-with-music/icon0.png
+          cp assets/pic0.dds ../game-build-with-music/pic0.dds
+          cp assets/pic1.dds ../game-build-with-music/pic1.dds
+          cp assets/param.json ../game-build-with-music/param.json
+          (cd ../game-build-with-music && sha256sum * > SHA256SUMS.txt)
+      - name: Package experimental JB Store integration ZIP
+        run: |
+          set -euo pipefail
+          python3 tools/package_store_bundle.py \
+            --upstream upstream-wkal \
+            --installer game-build-with-music/JAILBREAK-ME-CYBER-FASTBOOT_v0.4.0.elf \
+            --output game-build-with-music/WKAG00001-JB-STORE-EXPERIMENTAL.zip
+          python3 - <<'PY'
+          import zipfile,json
+          from pathlib import Path
+          p=Path('game-build-with-music/WKAG00001-JB-STORE-EXPERIMENTAL.zip')
+          with zipfile.ZipFile(p) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('store/manifest.json'))
+              assert m['title_id']=='WKAG00001'
+              assert m['is_fake_pkg'] is False and m['direct_install_supported_by_stock_jb_store'] is False
+              assert m['cache_file_count'] > 0
+          print('Store integration bundle verified (not mislabeled as fPKG)')
+          PY
+          (cd game-build-with-music && sha256sum *.zip >> SHA256SUMS.txt)
+      - name: Publish public GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="v0.4.0-cyber-fastboot"
+          elf="game-build-with-music/JAILBREAK-ME-CYBER-FASTBOOT_v0.4.0.elf"
+          bundle="game-build-with-music/WKAG00001-JB-STORE-EXPERIMENTAL.zip"
+          host="game-build-with-music/JAILBREAK-ME-host_v0.4.0.py"
+          hashes="game-build-with-music/SHA256SUMS.txt"
+          cat >/tmp/jailbreak-me-release-notes.md <<'NOTES'
+          # JAILBREAK ME v0.4.0 — Cyber Fastboot
+          - Based on itsPLK/ps5-webkit-autoloader v0.4.0 (GPL-3.0).
+          - Cyber Pirate installer + offline exploit UI; removes redundant splash delay.
+          - PS5 Game title WKAG00001 with custom artwork, music and 4K wallpaper.
+          - Tested install path: execute the ELF installer on an already-jailbroken PS5; reboot once.
+          - Standalone Python setup host for the upstream browser-based setup method.
+          - WKAG00001-JB-STORE-EXPERIMENTAL.zip is a **developer integration bundle**, not an fPKG, and **not directly installable** by the current generic JB Store ZIP handler. Future JB Store support must perform native shortcut registration and WebKit offline cache setup or invoke the bundled installer helper internally.
+          - Source, build scripts and assets available in this repository. Original author's credit and GPL-3.0 preserved.
+          NOTES
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "$elf" "$bundle" "$host" "$hashes" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" "$elf" "$bundle" "$host" "$hashes" \
+              --target "$(git rev-parse HEAD)" \
+              --title "JAILBREAK ME v0.4.0 - Cyber Fastboot" \
+              --notes-file /tmp/jailbreak-me-release-notes.md \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PS5-JAILBREAK-ME-v0.4.0-ELF-STORE-ZIP
+          path: game-build-with-music/
+          if-no-files-found: error
+          retention-days: 30
