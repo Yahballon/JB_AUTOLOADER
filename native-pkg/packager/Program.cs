@@ -11,7 +11,8 @@ string app = Path.GetFullPath(args[0]);
 string output = Path.GetFullPath(args[1]);
 if (!File.Exists(Path.Combine(app, "eboot.bin")) ||
     !File.Exists(Path.Combine(app,"sce_sys","param.json")) ||
-    !File.Exists(Path.Combine(app,"assets","web","app","index.html")))
+    !File.Exists(Path.Combine(app,"assets","web.dat")) ||
+    !File.Exists(Path.Combine(app,"assets","web-index.tsv")))
     throw new InvalidOperationException("Missing eboot, param or packaged offline exploit resources");
 Directory.CreateDirectory(output);
 const string id = "UP9000-PPSA99767_00-JAILBREAKMEPKG01";
