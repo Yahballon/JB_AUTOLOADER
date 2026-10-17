@@ -36,7 +36,8 @@ int sceKernelUsleep(unsigned int);
 namespace {
 constexpr int kPort = 18181;
 constexpr char kBrowserUrl[] = "http://127.0.0.1:18181/app/index.html";
-constexpr char kWebRoot[] = "/app0/assets/web";
+constexpr char kWebBlob[] = "/app0/assets/web.dat";
+constexpr char kWebIndex[] = "/app0/assets/web-index.tsv";
 constexpr char kLogFolder[] = "/data/jailbreak-me-pkg";
 constexpr char kLogFile[] = "/data/jailbreak-me-pkg/launch.log";
 
@@ -123,29 +124,47 @@ static void serve(int fd) {
     return;
   }
   if (!std::strcmp(path, "/")) path = const_cast<char*>("/app/index.html");
-  char filename[1100]{};
-  std::snprintf(filename, sizeof(filename), "%s%s", kWebRoot, path);
-  struct stat st{};
-  if (stat(filename, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) {
-    reply_error(fd, 404, "Not Found");
+  // Indexed single-file resource bundle. It keeps the PS5 package's NAPS
+  // metadata within the debug builder's block/entry limits, while preserving
+  // exactly the same browser paths from the ELF installer release.
+  FILE* index = std::fopen(kWebIndex, "rb");
+  if (!index) { reply_error(fd, 500, "Missing Asset Index"); return; }
+  char line[1100]{};
+  char resource[1024]{};
+  unsigned long long start = 0, length = 0;
+  bool found = false;
+  while (std::fgets(line, sizeof(line), index)) {
+    if (std::sscanf(line, "%1023[^\t]\t%llu\t%llu", resource, &start, &length) == 3 &&
+        std::strcmp(resource, path) == 0) {
+      found = true;
+      break;
+    }
+  }
+  std::fclose(index);
+  if (!found) { reply_error(fd, 404, "Not Found"); return; }
+  FILE* file = std::fopen(kWebBlob, "rb");
+  if (!file) { reply_error(fd, 500, "Missing Data Bundle"); return; }
+  if (std::fseek(file, static_cast<long>(start), SEEK_SET) != 0) {
+    std::fclose(file);
+    reply_error(fd, 500, "Asset Seek Failed");
     return;
   }
-  FILE* file = std::fopen(filename, "rb");
-  if (!file) { reply_error(fd, 500, "Internal Server Error"); return; }
   char response[512]{};
   int nh = std::snprintf(response, sizeof(response),
     "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %llu\r\n"
     "Connection: close\r\nAccess-Control-Allow-Origin: http://127.0.0.1:18181\r\n"
     "Cache-Control: no-cache\r\n\r\n",
-    mime(path), static_cast<unsigned long long>(st.st_size));
+    mime(path), length);
   if (nh <= 0 || static_cast<size_t>(nh) >= sizeof(response) ||
       !write_all(fd, response, static_cast<size_t>(nh))) {
     std::fclose(file); return;
   }
   char buffer[16384];
-  for (;;) {
-    const size_t got = std::fread(buffer, 1, sizeof(buffer), file);
+  while (length) {
+    const size_t want = length < sizeof(buffer) ? static_cast<size_t>(length) : sizeof(buffer);
+    const size_t got = std::fread(buffer, 1, want, file);
     if (got == 0 || !write_all(fd, buffer, got)) break;
+    length -= got;
   }
   std::fclose(file);
 }
