@@ -20,7 +20,7 @@ jobs:
       - name: Host toolchain and .NET 10
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang-18 ninja-build cmake python3-venv libz-dev libssl-dev
+          sudo apt-get install -y clang-18 ninja-build cmake ccache python3-venv libz-dev libssl-dev
           python3 -m py_compile native-pkg/tools/stage_native.py
           clang++-18 -std=c++20 -Wall -Wextra -pedantic -fsyntax-only native-pkg/src/main.cpp
       - uses: actions/setup-dotnet@v4
@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           # DevBridge GNUmakefile is EGL-specific. Our headless native app
           # reuses its proven eboot toolchain without unnecessary GL modules.
-          bash tools/rebuild-libc.sh
+          USE_CCACHE=0 bash tools/rebuild-libc.sh
           env USE_CCACHE=0 BUILD_JOBS=4 \
             APP_SOURCE_DIR=jbm-src APP_ASSETS=assets \
             APP_INCLUDE_PATHS= APP_STATIC_ARCHIVES= APP_IMPORT_STUBS= \
