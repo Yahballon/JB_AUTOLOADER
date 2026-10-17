@@ -64,7 +64,14 @@ jobs:
         working-directory: /tmp/jbm-devbridge/app
         run: |
           set -euo pipefail
-          make USE_CCACHE=0 BUILD_JOBS=4 app
+          # DevBridge GNUmakefile is EGL-specific. Our headless native app
+          # reuses its proven eboot toolchain without unnecessary GL modules.
+          bash tools/rebuild-libc.sh
+          env USE_CCACHE=0 BUILD_JOBS=4 \
+            APP_SOURCE_DIR=jbm-src APP_ASSETS=assets \
+            APP_INCLUDE_PATHS= APP_STATIC_ARCHIVES= APP_IMPORT_STUBS= \
+            APP_WRAP_SYMBOLS= APP_ROOT_FILES= \
+            bash tools/build.sh Folder
           test -s dist/PPSA99767/eboot.bin
           test -s dist/PPSA99767/sce_sys/param.json
           test -s dist/PPSA99767/assets/web/app/index.html
