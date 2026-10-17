@@ -22,7 +22,7 @@ def install_stage(bridge: Path, this_repo: Path, bundle: Path):
     app = bridge / "app"
     target_main = app / "jbm-src/main.cpp"
     source_main = this_repo / "native-pkg/src/main.cpp"
-    if not target_main.is_file() or not source_main.is_file():
+    if not (app / "src/main.cpp").is_file() or not source_main.is_file():
         raise FileNotFoundError("Pinned DevBridge app source or new launcher source missing")
     source = source_main.read_text()
     for check in ("sceSystemServiceLaunchWebBrowser", "sceNetAccept", "/app0/assets/web", "BROWSER_LAUNCH"):
