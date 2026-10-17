@@ -69,11 +69,11 @@ def install_stage(bridge: Path, this_repo: Path, bundle: Path):
                 if not name.startswith("offline/") or name.endswith("/"):
                     continue
                 relative = name.removeprefix("offline/")
-                if not relative or ".." in Path(relative).parts or "\\t" in relative or "\\n" in relative:
+                if not relative or ".." in Path(relative).parts or "\t" in relative or "\n" in relative:
                     raise ValueError("Unsafe offline path: "+name)
                 data = z.read(name)
                 packed.write(data)
-                index_lines.append(f"/{relative}\\t{offset}\\t{len(data)}\\n")
+                index_lines.append(f"/{relative}\t{offset}\t{len(data)}\n")
                 offset += len(data)
                 count += 1
         (app/"assets/web-index.tsv").write_text("".join(index_lines), encoding="utf-8")
@@ -87,7 +87,7 @@ def install_stage(bridge: Path, this_repo: Path, bundle: Path):
         # the PKG finalization stage, where the packager can emit BC7.
         (app/"sce_sys/snd0.at9").write_bytes(
             z.read("WKAG00001/sce_sys/snd0.at9"))
-    paths=[line.split("\\t", 1)[0] for line in (app/"assets/web-index.tsv").read_text().splitlines()]
+    paths=[line.split("\t", 1)[0] for line in (app/"assets/web-index.tsv").read_text().splitlines()]
     if "/app/index.html" not in paths or "/cache.appcache" not in paths:
         raise ValueError("Missing WebKit pointer/AppCache entrypoints")
     if not any(p.startswith("/app/") and p.endswith("/app.js") for p in paths):
