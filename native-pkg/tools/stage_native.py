@@ -58,16 +58,26 @@ def install_stage(bridge: Path, this_repo: Path, bundle: Path):
             raise ValueError("Unexpected WebKit asset bundle title/version")
         if not manifest.get("cache_file_count"):
             raise ValueError("No offline files in bundle")
-        for name in z.namelist():
-            if name.startswith("offline/") and not name.endswith("/"):
+        # Keep all HTTP resources, but store them as ONE random-access file.
+        # PS5 PKG NAPS layout has a limited 8-bit compression index.
+        # Hundreds of individual WebKit files exceed that limit.
+        # Each indexed path is served from web.dat by the native eboot.
+        index_lines = []
+        offset = 0
+        with (app/"assets/web.dat").open("wb") as packed:
+            for name in sorted(z.namelist()):
+                if not name.startswith("offline/") or name.endswith("/"):
+                    continue
                 relative = name.removeprefix("offline/")
-                if not relative or ".." in Path(relative).parts:
+                if not relative or ".." in Path(relative).parts or "\\t" in relative or "\\n" in relative:
                     raise ValueError("Unsafe offline path: "+name)
-                dest = assets/relative
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with z.open(name) as r, dest.open("wb") as f:
-                    shutil.copyfileobj(r,f)
-                count+=1
+                data = z.read(name)
+                packed.write(data)
+                index_lines.append(f"/{relative}\\t{offset}\\t{len(data)}\\n")
+                offset += len(data)
+                count += 1
+        (app/"assets/web-index.tsv").write_text("".join(index_lines), encoding="utf-8")
+        print(f"Indexed {count} offline resources in {offset} bytes")
         if count != manifest["cache_file_count"]:
             raise ValueError(f"Offline files mismatch ({count} vs {manifest['cache_file_count']})")
         # Copy the artwork and audio from the EXACT tested store bundle.
@@ -77,9 +87,10 @@ def install_stage(bridge: Path, this_repo: Path, bundle: Path):
         # the PKG finalization stage, where the packager can emit BC7.
         (app/"sce_sys/snd0.at9").write_bytes(
             z.read("WKAG00001/sce_sys/snd0.at9"))
-    if not (assets/"app/index.html").is_file() or not (assets/"cache.appcache").is_file():
+    paths=[line.split("\\t", 1)[0] for line in (app/"assets/web-index.tsv").read_text().splitlines()]
+    if "/app/index.html" not in paths or "/cache.appcache" not in paths:
         raise ValueError("Missing WebKit pointer/AppCache entrypoints")
-    if not any((assets/"app").glob("*/app.js")):
+    if not any(p.startswith("/app/") and p.endswith("/app.js") for p in paths):
         raise ValueError("No versioned WebKit app.js")
     print(f"Staged native prototype {TITLE_ID} with {count} offline browser files")
     print("Native browser API + server are UNTESTED on console; this ZIP is for test builds only")
